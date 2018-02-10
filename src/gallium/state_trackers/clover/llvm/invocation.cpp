@@ -54,6 +54,7 @@
 #include "llvm/invocation.hpp"
 #include "llvm/metadata.hpp"
 #include "llvm/util.hpp"
+#include "spirv/invocation.hpp"
 #include "util/algorithm.hpp"
 
 
@@ -153,13 +154,25 @@ namespace {
       c.getHeaderSearchOpts().UseStandardSystemIncludes = true;
       c.getHeaderSearchOpts().ResourceDir = CLANG_RESOURCE_DIR;
 
-      // Add libclc generic search path
-      c.getHeaderSearchOpts().AddPath(LIBCLC_INCLUDEDIR,
-                                      clang::frontend::Angled,
-                                      false, false);
+      const bool ignore_clc = target.find("spir") != std::string::npos;
 
-      // Add libclc include
-      c.getPreprocessorOpts().Includes.push_back("clc/clc.h");
+      if (ignore_clc) {
+         // Add opencl-c generic search path
+         c.getHeaderSearchOpts().AddPath(CLANG_RESOURCE_DIR,
+                                         clang::frontend::Angled,
+                                         false, false);
+
+         // Add opencl include
+         c.getPreprocessorOpts().Includes.push_back("opencl-c.h");
+      } else {
+         // Add libclc generic search path
+         c.getHeaderSearchOpts().AddPath(LIBCLC_INCLUDEDIR,
+                                         clang::frontend::Angled,
+                                         false, false);
+
+         // Add libclc include
+         c.getPreprocessorOpts().Includes.push_back("clc/clc.h");
+      }
 
       // Add definition for the OpenCL version
       c.getPreprocessorOpts().addMacroDef("__OPENCL_VERSION__=110");
@@ -189,8 +202,9 @@ namespace {
       // attribute will prevent Clang from creating illegal uses of
       // barrier() (e.g. Moving barrier() inside a conditional that is
       // no executed by all threads) during its optimizaton passes.
-      compat::add_link_bitcode_file(c.getCodeGenOpts(),
-                                    LIBCLC_LIBEXECDIR + target + ".bc");
+      if (!ignore_clc)
+         compat::add_link_bitcode_file(c.getCodeGenOpts(),
+                                       LIBCLC_LIBEXECDIR + target + ".bc");
 
       // Compile the code
       clang::EmitLLVMOnlyAction act(&ctx);
@@ -220,6 +234,52 @@ clover::llvm::compile_program(const std::string &source,
       debug::log(".ll", print_module_bitcode(*mod));
 
    return build_module_library(*mod, module::section::text_intermediate);
+}
+
+module
+clover::llvm::compile_to_spirv(const std::string &source,
+                               const header_map &headers,
+                               const device &dev,
+                               const std::string &opts,
+                               std::string &r_log) {
+   if (has_flag(debug::clc))
+      debug::log(".cl", "// Options: " + opts + '\n' + source);
+
+   auto ctx = create_context(r_log);
+   const std::string target = dev.address_bits() == 64u ?
+      "-spir64-unknown-unknown" :
+      "-spir-unknown-unknown";
+   auto c = create_compiler_instance(target, tokenize(opts + " input.cl"),
+                                     r_log);
+   auto mod = compile(*ctx, *c, "input.cl", source, headers, target, opts,
+                      r_log);
+
+   if (has_flag(debug::llvm))
+      debug::log(".ll", print_module_bitcode(*mod));
+
+   std::string error_msg;
+   if (!::llvm::RegularizeLLVMForSPIRV(mod.get(), error_msg)) {
+      r_log += "Failed to regularize LLVM IR for SPIR-V: " + error_msg + ".\n";
+      throw error(CL_INVALID_VALUE);
+   }
+
+   ::llvm::SmallVector<char, 1024> data;
+   ::llvm::raw_svector_ostream os { data };
+   if (!::llvm::WriteSPIRV(mod.get(), os, error_msg)) {
+      r_log += "Translation from LLVM IR to SPIR-V failed: " + error_msg + ".\n";
+      throw error(CL_INVALID_VALUE);
+   }
+
+   std::vector<char> binary(os.str().begin(), os.str().end());
+   if (binary.empty()) {
+      r_log += "Failed to retrieve SPIR-V binary.\n";
+      throw error(CL_INVALID_VALUE);
+   }
+
+   if (has_flag(debug::spirv))
+      debug::log(".spv", binary);
+
+   return spirv::process_program(binary, dev, true, r_log);
 }
 
 namespace {
