@@ -2484,7 +2484,7 @@ Converter::convertInstruction(const spv_parsed_instruction_t *parsedInstruction)
          }
 
          // TODO(pmoreau): this is a hack as TypeEvent is not a physical value
-         if (pointer_type->getPointedType()->type == spv::Op::OpTypeEvent)
+         if (pointerType->getPointedType()->type == spv::Op::OpTypeEvent)
             return SPV_SUCCESS;
 
          auto value = searchElementStruct->second.value;
