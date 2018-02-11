@@ -1445,8 +1445,7 @@ Converter::getStorageFile(spv::StorageClass storage)
    case spv::StorageClass::AtomicCounter: // FALLTHROUGH
    case spv::StorageClass::Image: // FALLTHROUGH
    default:
-      pipe_debug_message(info->debug, ERROR,
-                         "StorageClass %u isn't supported yet\n");
+      debug_printf("StorageClass %u isn't supported yet\n", storage);
       assert(false);
       return SpirvFile::NONE;
    }
