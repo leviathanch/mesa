@@ -452,11 +452,11 @@ nvc0_stage_sampler_states_bind(struct nvc0_context *nvc0,
    for (i = 0; i < nr; ++i) {
       struct nv50_tsc_entry *old = nvc0->samplers[s][i];
 
-      if (hwcso[i] == old)
+      if (hwcso && hwcso[i] == old)
          continue;
       nvc0->samplers_dirty[s] |= 1 << i;
 
-      nvc0->samplers[s][i] = nv50_tsc_entry(hwcso[i]);
+      nvc0->samplers[s][i] = nv50_tsc_entry(hwcso ? hwcso[i] : NULL);
       if (old)
          nvc0_screen_tsc_unlock(nvc0->screen, old);
    }
@@ -509,11 +509,11 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
    for (i = 0; i < nr; ++i) {
       struct nv50_tic_entry *old = nv50_tic_entry(nvc0->textures[s][i]);
 
-      if (views[i] == nvc0->textures[s][i])
+      if (views && views[i] == nvc0->textures[s][i])
          continue;
       nvc0->textures_dirty[s] |= 1 << i;
 
-      if (views[i] && views[i]->texture) {
+      if (views && views[i] && views[i]->texture) {
          struct pipe_resource *res = views[i]->texture;
          if (res->target == PIPE_BUFFER &&
              (res->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT))
@@ -532,7 +532,7 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
          nvc0_screen_tic_unlock(nvc0->screen, old);
       }
 
-      pipe_sampler_view_reference(&nvc0->textures[s][i], views[i]);
+      pipe_sampler_view_reference(&nvc0->textures[s][i], views ? views[i] : NULL);
    }
 
    for (i = nr; i < nvc0->num_textures[s]; ++i) {
@@ -690,17 +690,30 @@ nvc0_cp_state_create(struct pipe_context *pipe,
                      const struct pipe_compute_state *cso)
 {
    struct nvc0_program *prog;
+   const struct pipe_llvm_program_header *header;
 
    prog = CALLOC_STRUCT(nvc0_program);
    if (!prog)
       return NULL;
    prog->type = PIPE_SHADER_COMPUTE;
 
+   header = cso->prog;
+
    prog->cp.smem_size = cso->req_local_mem;
    prog->cp.lmem_size = cso->req_private_mem;
    prog->parm_size = cso->req_input_mem;
 
-   prog->pipe.tokens = tgsi_dup_tokens((const struct tgsi_token *)cso->prog);
+   switch (cso->ir_type) {
+   case PIPE_SHADER_IR_TGSI:
+      prog->pipe.tokens = tgsi_dup_tokens((const struct tgsi_token *)cso->prog);
+      break;
+   case PIPE_SHADER_IR_SPIRV:
+      prog->cp.num_bytes = header->num_bytes;
+      prog->cp.spirv = malloc(prog->cp.num_bytes);
+      memcpy(prog->cp.spirv, cso->prog + sizeof(struct pipe_llvm_program_header),
+             prog->cp.num_bytes);
+      break;
+   }
 
    prog->translated = nvc0_program_translate(
       prog, nvc0_context(pipe)->screen->base.device->chipset,

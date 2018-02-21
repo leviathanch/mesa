@@ -568,8 +568,15 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
 
    info->type = prog->type;
    info->target = chipset;
-   info->bin.sourceRep = PIPE_SHADER_IR_TGSI;
-   info->bin.source = (void *)prog->pipe.tokens;
+
+   if (prog->cp.spirv != NULL) {
+      info->bin.sourceRep = PIPE_SHADER_IR_SPIRV;
+      info->bin.source = prog->cp.spirv;
+      info->bin.sourceLength = prog->cp.num_bytes;
+   } else {
+      info->bin.sourceRep = PIPE_SHADER_IR_TGSI;
+      info->bin.source = (void *)prog->pipe.tokens;
+   }
 
 #ifdef DEBUG
    info->target = debug_get_num_option("NV50_PROG_CHIPSET", chipset);
@@ -579,6 +586,8 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
 #else
    info->optLevel = 3;
 #endif
+
+   info->debug = debug;
 
    info->bin.smemSize = prog->cp.smem_size;
    info->io.genUserClip = prog->vp.num_ucps;
@@ -685,11 +694,11 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
       prog->tfb = nvc0_program_create_tfb_state(info,
                                                 &prog->pipe.stream_output);
 
-   pipe_debug_message(debug, SHADER_INFO,
+/*   pipe_debug_message(debug, SHADER_INFO,
                       "type: %d, local: %d, shared: %d, gpr: %d, inst: %d, bytes: %d",
                       prog->type, info->bin.tlsSpace, info->bin.smemSize,
                       prog->num_gprs, info->bin.instructions,
-                      info->bin.codeSize);
+                      info->bin.codeSize);*/
 
 #ifdef DEBUG
    if (debug_get_option("NV50_PROG_CHIPSET", NULL) && info->dbgFlags)

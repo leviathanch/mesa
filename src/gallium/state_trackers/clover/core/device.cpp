@@ -243,12 +243,10 @@ device::vendor_name() const {
 
 enum pipe_shader_ir
 device::ir_format() const {
-   int supported_irs =
-      pipe->get_shader_param(pipe, PIPE_SHADER_COMPUTE,
-                             PIPE_SHADER_CAP_SUPPORTED_IRS);
-
-   if (supported_irs & (1 << PIPE_SHADER_IR_NATIVE)) {
+   if (supports_ir(PIPE_SHADER_IR_NATIVE)) {
       return PIPE_SHADER_IR_NATIVE;
+   } else if (supports_ir(PIPE_SHADER_IR_SPIRV)) {
+      return PIPE_SHADER_IR_SPIRV;
    }
 
    return PIPE_SHADER_IR_TGSI;
@@ -274,4 +272,27 @@ device::device_version() const {
 std::string
 device::device_clc_version() const {
     return "1.1";
+}
+
+bool
+device::supports_ir(enum pipe_shader_ir ir) const {
+   return pipe->get_shader_param(pipe, PIPE_SHADER_COMPUTE,
+                                 PIPE_SHADER_CAP_SUPPORTED_IRS) & (1 << ir);
+}
+
+std::string
+device::supported_extensions() const {
+   const bool supports_il_program = supports_ir(PIPE_SHADER_IR_NATIVE) ||
+                                    supports_ir(PIPE_SHADER_IR_SPIRV);
+   return
+      "cl_khr_byte_addressable_store"
+      " cl_khr_global_int32_base_atomics"
+      " cl_khr_global_int32_extended_atomics"
+      " cl_khr_local_int32_base_atomics"
+      " cl_khr_local_int32_extended_atomics"
+      + std::string(has_int64_atomics() ? " cl_khr_int64_base_atomics" : "")
+      + std::string(has_int64_atomics() ? " cl_khr_int64_extended_atomics" : "")
+      + std::string(has_doubles() ? " cl_khr_fp64" : "")
+      + std::string(has_halves() ? " cl_khr_fp16" : "")
+      + std::string(supports_il_program ? " cl_khr_il_program" : "");
 }

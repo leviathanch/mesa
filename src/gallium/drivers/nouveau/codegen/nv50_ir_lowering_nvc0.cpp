@@ -199,27 +199,48 @@ NVC0LegalizeSSA::handleShift(Instruction *lo)
       // between the right/left cases. The main difference is swapping hi/lo
       // on input and output.
 
-      Value *x32_minus_shift, *pred, *hi1, *hi2;
       DataType type = isSignedIntType(lo->dType) ? TYPE_S32 : TYPE_U32;
       operation antiop = op == OP_SHR ? OP_SHL : OP_SHR;
       if (op == OP_SHR)
          std::swap(src[0], src[1]);
-      bld.mkOp2(OP_ADD, TYPE_U32, (x32_minus_shift = bld.getSSA()), shift, bld.mkImm(0x20))
-         ->src(0).mod = Modifier(NV50_IR_MOD_NEG);
-      bld.mkCmp(OP_SET, CC_LE, TYPE_U8, (pred = bld.getSSA(1, FILE_PREDICATE)),
-                TYPE_U32, shift, bld.mkImm(32));
-      // Compute HI (shift <= 32)
-      bld.mkOp2(OP_OR, TYPE_U32, (hi1 = bld.getSSA()),
-                bld.mkOp2v(op, TYPE_U32, bld.getSSA(), src[1], shift),
-                bld.mkOp2v(antiop, TYPE_U32, bld.getSSA(), src[0], x32_minus_shift))
-         ->setPredicate(CC_P, pred);
-      // Compute LO (all shift values)
-      bld.mkOp2(op, type, (dst[0] = bld.getSSA()), src[0], shift);
-      // Compute HI (shift > 32)
-      bld.mkOp2(op, type, (hi2 = bld.getSSA()), src[0],
-                bld.mkOp1v(OP_NEG, TYPE_S32, bld.getSSA(), x32_minus_shift))
-         ->setPredicate(CC_NOT_P, pred);
-      bld.mkOp2(OP_UNION, TYPE_U32, (dst[1] = bld.getSSA()), hi1, hi2);
+
+      ImmediateValue *shiftImm = shift->asImm();
+      if (shiftImm) {
+         if (shift->reg.data.u32 <= 32) {
+            // Compute LO
+            bld.mkOp2(op, type, (dst[0] = bld.getSSA()), src[0], shiftImm);
+            // Compute HI
+            bld.mkOp2(OP_OR, TYPE_U32, (dst[1] = bld.getSSA()),
+                      bld.mkOp2v(op, TYPE_U32, bld.getSSA(), src[1], shiftImm),
+                      bld.mkOp2v(antiop, TYPE_U32, bld.getSSA(), src[0],
+                                 bld.mkImm(32u - shiftImm->reg.data.u32)));
+         } else {
+            // Compute LO (shift >= 32, therefore filled with 0s)
+            bld.mkOp1(OP_MOV, type, (dst[0] = bld.getSSA()), bld.mkImm(0x0));
+            // Compute HI
+            bld.mkOp2(op, type, (dst[1] = bld.getSSA()), src[0],
+                      bld.mkImm(shiftImm->reg.data.u32 - 32u));
+         }
+      } else {
+         Value *x32_minus_shift, *pred, *hi1, *hi2;
+         bld.mkOp2(OP_ADD, TYPE_U32, (x32_minus_shift = bld.getSSA()), shift, bld.mkImm(0x20))
+            ->src(0).mod = Modifier(NV50_IR_MOD_NEG);
+         bld.mkCmp(OP_SET, CC_LE, TYPE_U8, (pred = bld.getSSA(1, FILE_PREDICATE)),
+                   TYPE_U32, shift, bld.mkImm(32));
+         // Compute HI (shift <= 32)
+         bld.mkOp2(OP_OR, TYPE_U32, (hi1 = bld.getSSA()),
+                   bld.mkOp2v(op, TYPE_U32, bld.getSSA(), src[1], shift),
+                   bld.mkOp2v(antiop, TYPE_U32, bld.getSSA(), src[0], x32_minus_shift))
+            ->setPredicate(CC_P, pred);
+         // Compute LO (all shift values)
+         bld.mkOp2(op, type, (dst[0] = bld.getSSA()), src[0], shift);
+         // Compute HI (shift > 32)
+         bld.mkOp2(op, type, (hi2 = bld.getSSA()), src[0],
+                   bld.mkOp1v(OP_NEG, TYPE_S32, bld.getSSA(), x32_minus_shift))
+            ->setPredicate(CC_NOT_P, pred);
+         bld.mkOp2(OP_UNION, TYPE_U32, (dst[1] = bld.getSSA()), hi1, hi2);
+      }
+
       if (op == OP_SHR)
          std::swap(dst[0], dst[1]);
       bld.mkOp2(OP_MERGE, TYPE_U64, dst64, dst[0], dst[1]);
@@ -1560,33 +1581,36 @@ NVC0LoweringPass::handleATOM(Instruction *atom)
       else if (targ->getChipset() < NVISA_GM107_CHIPSET)
          handleSharedATOMNVE4(atom);
       return true;
+   case FILE_MEMORY_GLOBAL:
+      return true;
    default:
       assert(atom->src(0).getFile() == FILE_MEMORY_BUFFER);
-      base = loadBufInfo64(ind, atom->getSrc(0)->reg.fileIndex * 16);
+      base = ptr;
+//      base = loadBufInfo64(ind, atom->getSrc(0)->reg.fileIndex * 16);
       assert(base->reg.size == 8);
-      if (ptr)
-         base = bld.mkOp2v(OP_ADD, TYPE_U64, base, base, ptr);
+//      if (ptr)
+//         base = bld.mkOp2v(OP_ADD, TYPE_U64, base, base, ptr);
       assert(base->reg.size == 8);
       atom->setIndirect(0, 0, base);
       atom->getSrc(0)->reg.file = FILE_MEMORY_GLOBAL;
 
-      // Harden against out-of-bounds accesses
-      Value *offset = bld.loadImm(NULL, atom->getSrc(0)->reg.data.offset + typeSizeof(atom->sType));
-      Value *length = loadBufLength32(ind, atom->getSrc(0)->reg.fileIndex * 16);
-      Value *pred = new_LValue(func, FILE_PREDICATE);
-      if (ptr)
-         bld.mkOp2(OP_ADD, TYPE_U32, offset, offset, ptr);
-      bld.mkCmp(OP_SET, CC_GT, TYPE_U32, pred, TYPE_U32, offset, length);
-      atom->setPredicate(CC_NOT_P, pred);
-      if (atom->defExists(0)) {
-         Value *zero, *dst = atom->getDef(0);
-         atom->setDef(0, bld.getSSA());
-
-         bld.setPosition(atom, true);
-         bld.mkMov((zero = bld.getSSA()), bld.mkImm(0))
-            ->setPredicate(CC_P, pred);
-         bld.mkOp2(OP_UNION, TYPE_U32, dst, atom->getDef(0), zero);
-      }
+//      // Harden against out-of-bounds accesses
+//      Value *offset = bld.loadImm(NULL, atom->getSrc(0)->reg.data.offset + typeSizeof(atom->sType));
+//      Value *length = loadBufLength32(ind, atom->getSrc(0)->reg.fileIndex * 16);
+//      Value *pred = new_LValue(func, FILE_PREDICATE);
+//      if (ptr)
+//         bld.mkOp2(OP_ADD, TYPE_U32, offset, offset, ptr);
+//      bld.mkCmp(OP_SET, CC_GT, TYPE_U32, pred, TYPE_U32, offset, length);
+//      atom->setPredicate(CC_NOT_P, pred);
+//      if (atom->defExists(0)) {
+//         Value *zero, *dst = atom->getDef(0);
+//         atom->setDef(0, bld.getSSA());
+//
+//         bld.setPosition(atom, true);
+//         bld.mkMov((zero = bld.getSSA()), bld.mkImm(0))
+//            ->setPredicate(CC_P, pred);
+//         bld.mkOp2(OP_UNION, TYPE_U32, dst, atom->getDef(0), zero);
+//      }
 
       return true;
    }
@@ -1933,17 +1957,17 @@ NVC0LoweringPass::processSurfaceCoordsNVE4(TexInstruction *su)
    if (dim == 3) {
       v = loadSuInfo32(ind, slot, NVC0_SU_INFO_UNK1C, su->tex.bindless);
       bld.mkOp3(OP_MADSP, TYPE_U32, off, src[2], v, src[1])
-         ->subOp = NV50_IR_SUBOP_MADSP(4,2,8); // u16l u16l u16l
+         ->subOp = NV50_IR_SUBOP_MADSP_TUPLE(U16L, U16L, 16L);
 
       v = loadSuInfo32(ind, slot, NVC0_SU_INFO_PITCH, su->tex.bindless);
       bld.mkOp3(OP_MADSP, TYPE_U32, off, off, v, src[0])
-         ->subOp = NV50_IR_SUBOP_MADSP(0,2,8); // u32 u16l u16l
+         ->subOp = NV50_IR_SUBOP_MADSP_TUPLE(U32, U16L, 16L);
    } else {
       assert(dim == 2);
       v = loadSuInfo32(ind, slot, NVC0_SU_INFO_PITCH, su->tex.bindless);
       bld.mkOp3(OP_MADSP, TYPE_U32, off, src[1], v, src[0])
          ->subOp = (su->tex.target.isArray() || su->tex.target.isCube()) ?
-         NV50_IR_SUBOP_MADSP_SD : NV50_IR_SUBOP_MADSP(4,2,8); // u16l u16l u16l
+         NV50_IR_SUBOP_MADSP_SD : NV50_IR_SUBOP_MADSP_TUPLE(U16L, U16L, 16L);
    }
 
    // calculate effective address part 1
@@ -1995,10 +2019,10 @@ NVC0LoweringPass::processSurfaceCoordsNVE4(TexInstruction *su)
       v = loadSuInfo32(ind, slot, NVC0_SU_INFO_ARRAY, su->tex.bindless);
       if (dim == 1)
          bld.mkOp3(OP_MADSP, TYPE_U32, eau, src[1], v, eau)
-            ->subOp = NV50_IR_SUBOP_MADSP(4,0,0); // u16 u24 u32
+            ->subOp = NV50_IR_SUBOP_MADSP_TUPLE(U16L, U24, 32);
       else
          bld.mkOp3(OP_MADSP, TYPE_U32, eau, v, src[2], eau)
-            ->subOp = NV50_IR_SUBOP_MADSP(0,0,0); // u32 u24 u32
+            ->subOp = NV50_IR_SUBOP_MADSP_TUPLE(U32, U24, 32);
       // combine predicates
       assert(p1);
       bld.mkOp2(OP_OR, TYPE_U8, pred, pred, p1);
@@ -2832,6 +2856,62 @@ NVC0LoweringPass::handleOUT(Instruction *i)
    return true;
 }
 
+// TODO(pmoreau): check the implementation
+bool
+NVC0LoweringPass::handleCVT(Instruction *i)
+{
+   if (isFloatType(i->dType) || isFloatType(i->sType))
+      return true;
+
+   if (i->dType == i->sType) {
+      i->op = OP_MOV;
+      return true;
+   }
+
+   if (typeSizeof(i->dType) < 8u && typeSizeof(i->sType) < 8u)
+      return true;
+
+   if (i->saturate && (typeSizeof(i->sType) > typeSizeof(i->dType))) {
+      if (isSignedIntType(i->sType) && !isSignedIntType(i->dType)) {
+         // Signed to unsigned: only need to clamp to 0
+         Value *minValue = bld.mkOp2v(OP_MAX, i->sType, bld.getSSA(), i->getSrc(0), bld.loadImm(NULL, 0));
+         i->setSrc(0, minValue);
+      } else if (!isSignedIntType(i->sType) && isSignedIntType(i->dType)) {
+         // Unsigned to signed: only need to clamp to max value of dType
+         int dTypeMax = (1 << (typeSizeof(i->dType) * 8 - 1)) - 1;
+         Value *maxValue = bld.mkOp2v(OP_MIN, i->sType, bld.getSSA(), i->getSrc(0), bld.loadImm(NULL, dTypeMax));
+         i->setSrc(0, maxValue);
+      }
+      if (isSignedIntType(i->sType) && isSignedIntType(i->dType)) {
+         // Signed to signed: additionnally clamp to min value of dType
+         int dTypeMin = -(1 << (typeSizeof(i->dType) * 8 - 1));
+         Value *minValue = bld.mkOp2v(OP_MAX, i->sType, bld.getSSA(), i->getSrc(0), bld.loadImm(NULL, dTypeMin));
+         i->setSrc(0, minValue);
+      } else if (!isSignedIntType(i->sType) && !isSignedIntType(i->dType)) {
+         // Unsigned to unsigned: additionally clamp to max value of dType
+         int dTypeMax = (1 << (typeSizeof(i->dType) * 8 - 1)) - 1;
+         Value *maxValue = bld.mkOp2v(OP_MIN, i->sType, bld.getSSA(), i->getSrc(0), bld.loadImm(NULL, dTypeMax));
+         i->setSrc(0, maxValue);
+      }
+   }
+
+   if (typeSizeof(i->dType) == 8) {
+      if (isSignedIntType(i->sType)) {
+         Value *high = bld.mkOp2v(OP_SHR, TYPE_S32, bld.getSSA(), i->getSrc(0), bld.loadImm(NULL, 31));
+         bld.mkOp2(OP_MERGE, i->dType, i->getDef(0), i->getSrc(0), high);
+      } else {
+         bld.mkOp2(OP_MERGE, i->dType, i->getDef(0), i->getSrc(0), bld.loadImm(NULL, 0));
+      }
+   } else if (typeSizeof(i->sType) == 8) {
+      Instruction *insn = bld.mkOp1(OP_SPLIT, i->dType, i->getDef(0), i->getSrc(0));
+      Value *high = bld.getSSA();
+      insn->setDef(1, high);
+   }
+
+   delete_Instruction(prog, i);
+   return true;
+}
+
 // Generate a binary predicate if an instruction is predicated by
 // e.g. an f32 value.
 void
@@ -2867,6 +2947,8 @@ NVC0LoweringPass::visit(Instruction *i)
       checkPredicate(i);
 
    switch (i->op) {
+   case OP_CVT:
+      return handleCVT(i);
    case OP_TEX:
    case OP_TXB:
    case OP_TXL:

@@ -826,11 +826,9 @@ CodeEmitterNVC0::emitMADSP(const Instruction *i)
    if (i->subOp == NV50_IR_SUBOP_MADSP_SD) {
       code[1] |= 0x01800000;
    } else {
-      code[0] |= (i->subOp & 0x00f) << 7;
-      code[0] |= (i->subOp & 0x0f0) << 1;
-      code[0] |= (i->subOp & 0x100) >> 3;
-      code[0] |= (i->subOp & 0x200) >> 2;
-      code[1] |= (i->subOp & 0xc00) << 13;
+      code[0] |= (i->subOp & 0x007) << 7;
+      code[0] |= (i->subOp & 0x030) << 1;
+      code[1] |= (i->subOp & 0x300) << 15;
    }
 
    if (i->flagsDef >= 0)
@@ -1392,7 +1390,7 @@ CodeEmitterNVC0::emitTXQ(const TexInstruction *i)
    code[1] = 0xc0000000;
 
    switch (i->tex.query) {
-   case TXQ_DIMS:            code[1] |= 0 << 22; break;
+   case TXQ_DIMS:            code[1] |= 1 << 20; break;
    case TXQ_TYPE:            code[1] |= 1 << 22; break;
    case TXQ_SAMPLE_POSITION: code[1] |= 2 << 22; break;
    case TXQ_FILTER:          code[1] |= 3 << 22; break;

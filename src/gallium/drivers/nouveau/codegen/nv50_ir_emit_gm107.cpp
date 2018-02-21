@@ -87,7 +87,7 @@ private:
    inline void emitADDR(int, int, int, int, const ValueRef &);
    inline void emitCBUF(int, int, int, int, int, const ValueRef &);
    inline bool longIMMD(const ValueRef &);
-   inline void emitIMMD(int, int, const ValueRef &);
+   inline void emitIMMD(int, int, const ValueRef &, bool = false);
 
    void emitCond3(int, CondCode);
    void emitCond4(int, CondCode);
@@ -334,10 +334,15 @@ CodeEmitterGM107::longIMMD(const ValueRef &ref)
 }
 
 void
-CodeEmitterGM107::emitIMMD(int pos, int len, const ValueRef &ref)
+CodeEmitterGM107::emitIMMD(int pos, int len, const ValueRef &ref, bool applyNeg)
 {
    const ImmediateValue *imm = ref.get()->asImm();
    uint32_t val = imm->reg.data.u32;
+   if (applyNeg) {
+      Storage storage = imm->reg;
+      storage.data.s32 = -storage.data.s32;
+      val = storage.data.u32;
+   }
 
    if (len == 19) {
       if (insn->sType == TYPE_F32 || insn->sType == TYPE_F16) {
@@ -1731,6 +1736,8 @@ CodeEmitterGM107::emitNOT()
 void
 CodeEmitterGM107::emitIADD()
 {
+   const bool applySrc1Neg = insn->src(1).mod.neg() ^ (insn->op == OP_SUB);
+
    if (insn->src(1).getFile() != FILE_IMMEDIATE) {
       switch (insn->src(1).getFile()) {
       case FILE_GPR:
@@ -1751,7 +1758,8 @@ CodeEmitterGM107::emitIADD()
       }
       emitSAT(0x32);
       emitNEG(0x31, insn->src(0));
-      emitNEG(0x30, insn->src(1));
+      if (applySrc1Neg)
+         code[1] |= 0x00010000;
       emitCC (0x2f);
       emitX  (0x2b);
    } else {
@@ -1760,11 +1768,8 @@ CodeEmitterGM107::emitIADD()
       emitSAT (0x36);
       emitX   (0x35);
       emitCC  (0x34);
-      emitIMMD(0x14, 32, insn->src(1));
+      emitIMMD(0x14, 32, insn->src(1), applySrc1Neg);
    }
-
-   if (insn->op == OP_SUB)
-      code[1] ^= 0x00010000;
 
    emitGPR(0x08, insn->src(0));
    emitGPR(0x00, insn->def(0));
@@ -3944,6 +3949,7 @@ SchedDataCalculatorGM107::needWrDepBar(const Instruction *insn) const
 
    for (int d = 0; insn->defExists(d); ++d) {
       if (insn->def(d).getFile() == FILE_GPR ||
+          insn->def(d).getFile() == FILE_FLAGS ||
           insn->def(d).getFile() == FILE_PREDICATE)
          return true;
    }
@@ -3969,18 +3975,23 @@ SchedDataCalculatorGM107::findFirstUse(const Instruction *bari) const
 
       for (int s = 0; insn->srcExists(s); ++s) {
          const Value *src = insn->src(s).rep();
-         if (bari->def(0).getFile() == FILE_GPR) {
-            if (insn->src(s).getFile() != FILE_GPR ||
-                src->reg.data.id + src->reg.size / 4 - 1 < minGPR ||
-                src->reg.data.id > maxGPR)
-               continue;
-            return insn;
-         } else
-         if (bari->def(0).getFile() == FILE_PREDICATE) {
-            if (insn->src(s).getFile() != FILE_PREDICATE ||
-                src->reg.data.id != minGPR)
-               continue;
-            return insn;
+         for (int d = 0; bari->defExists(d); ++d) {
+            if (bari->def(d).getFile() == FILE_GPR) {
+               if (insn->src(s).getFile() != FILE_GPR ||
+                   src->reg.data.id + src->reg.size / 4 - 1 < minGPR ||
+                   src->reg.data.id > maxGPR)
+                  continue;
+               return insn;
+            } else
+            if (bari->def(d).getFile() == FILE_PREDICATE) {
+               if (insn->src(s).getFile() != FILE_PREDICATE ||
+                   src->reg.data.id != minGPR)
+                  continue;
+               return insn;
+            }
+            if (bari->def(d).getFile() == FILE_FLAGS) {
+               return insn;
+            }
          }
       }
    }
@@ -4000,7 +4011,8 @@ SchedDataCalculatorGM107::findFirstDef(const Instruction *bari) const
 
       for (int d = 0; insn->defExists(d); ++d) {
          const Value *def = insn->def(d).rep();
-         if (insn->def(d).getFile() != FILE_GPR)
+         if (insn->def(d).getFile() != FILE_GPR &&
+             insn->def(d).getFile() != FILE_FLAGS)
             continue;
 
          minGPR = def->reg.data.id;
@@ -4008,7 +4020,11 @@ SchedDataCalculatorGM107::findFirstDef(const Instruction *bari) const
 
          for (int s = 0; bari->srcExists(s); ++s) {
             const Value *src = bari->src(s).rep();
+            if (bari->src(s).getFile() == FILE_FLAGS &&
+                insn->def(d).getFile() == FILE_FLAGS)
+               return insn;
             if (bari->src(s).getFile() != FILE_GPR ||
+                insn->def(d).getFile() != FILE_GPR ||
                 src->reg.data.id + src->reg.size / 4 - 1 < minGPR ||
                 src->reg.data.id > maxGPR)
                continue;

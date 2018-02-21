@@ -22,6 +22,7 @@
 
 #include "codegen/nv50_ir.h"
 #include "codegen/nv50_ir_build_util.h"
+#include "codegen/nv50_ir_target.h"
 
 namespace nv50_ir {
 
@@ -563,6 +564,7 @@ BuildUtil::split64BitOpPostRA(Function *fn, Instruction *i,
 {
    DataType hTy;
    int srcNr;
+   bool hasCarry = false;
 
    switch (i->dType) {
    case TYPE_U64: hTy = TYPE_U32; break;
@@ -579,11 +581,17 @@ BuildUtil::split64BitOpPostRA(Function *fn, Instruction *i,
 
    switch (i->op) {
    case OP_MOV: srcNr = 1; break;
+   case OP_AND:
+   case OP_OR:
+   case OP_XOR:
+      srcNr = 2;
+      break;
    case OP_ADD:
    case OP_SUB:
       if (!carry)
          return NULL;
       srcNr = 2;
+      hasCarry = true;
       break;
    case OP_SELP: srcNr = 3; break;
    default:
@@ -629,11 +637,36 @@ BuildUtil::split64BitOpPostRA(Function *fn, Instruction *i,
          }
       }
    }
-   if (srcNr == 2) {
+   if (hasCarry) {
       lo->setFlagsDef(1, carry);
       hi->setFlagsSrc(hi->srcCount(), carry);
    }
    return hi;
+}
+
+Instruction *
+BuildUtil::mkMAD24(Value *dst, DataType dType, Value *src0, Value *src1,
+                   Value *src2)
+{
+   if (prog->getTarget()->isOpSupported(OP_MADSP, dType)) {
+      Instruction *madsp = mkOp3(OP_MADSP, dType, dst, src0, src1, src2);
+      switch (dType) {
+      case TYPE_S32:
+         madsp->subOp = NV50_IR_SUBOP_MADSP_TUPLE(S24, S24, 32);
+         break;
+      case TYPE_U32:
+         madsp->subOp = NV50_IR_SUBOP_MADSP_TUPLE(U24, U16L, 32);
+         break;
+      default:
+         assert(!"unsupported dType for MAD24!");
+         break;
+      }
+      return madsp;
+   } else {
+      mkOp2(OP_EXTBF, dType, src0, src0, mkImm(0x1800));
+      mkOp2(OP_EXTBF, dType, src1, src1, mkImm(0x1800));
+      return mkOp3(OP_MAD, dType, dst, src0, src1, src2);
+   }
 }
 
 } // namespace nv50_ir

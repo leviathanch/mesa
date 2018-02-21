@@ -423,7 +423,10 @@ ImmediateValue::isNegative() const
 bool
 ImmediateValue::isPow2() const
 {
-   return util_is_power_of_two(reg.data.u32);
+   if (reg.type == TYPE_U64 || reg.type == TYPE_S64)
+      return util_is_power_of_two(reg.data.u64);
+   else
+      return util_is_power_of_two(reg.data.u32);
 }
 
 void
@@ -439,6 +442,12 @@ ImmediateValue::applyLog2()
    case TYPE_U16:
    case TYPE_U32:
       reg.data.u32 = util_logbase2(reg.data.u32);
+      break;
+   case TYPE_S64:
+      assert(!this->isNegative());
+      // fall through
+   case TYPE_U64:
+      reg.data.u64 = util_logbase2_64(reg.data.u64);
       break;
    case TYPE_F32:
       reg.data.f32 = log2f(reg.data.f32);
@@ -1229,10 +1238,14 @@ nv50_ir_generate_code(struct nv50_ir_prog_info *info)
    prog->driver = info;
    prog->dbgFlags = info->dbgFlags;
    prog->optLevel = info->optLevel;
+   prog->tlsSize  = info->bin.tlsSpace;
 
    switch (info->bin.sourceRep) {
    case PIPE_SHADER_IR_TGSI:
       ret = prog->makeFromTGSI(info) ? 0 : -2;
+      break;
+   case PIPE_SHADER_IR_SPIRV:
+      ret = prog->makeFromSPIRV(info) ? 0 : -2;
       break;
    default:
       ret = -1;

@@ -28,14 +28,7 @@ cl_HEADERS = \
 	$(top_srcdir)/include/CL/opencl.h
 endif
 
-noinst_LTLIBRARIES = libclover.la libcltgsi.la libclllvm.la
-
-libcltgsi_la_CXXFLAGS = \
-	$(CXX11_CXXFLAGS) \
-	$(CLOVER_STD_OVERRIDE) \
-	$(VISIBILITY_CXXFLAGS)
-
-libcltgsi_la_SOURCES = $(TGSI_SOURCES)
+noinst_LTLIBRARIES = libclover.la libclllvm.la libclspirv.la
 
 libclllvm_la_CXXFLAGS = \
 	$(CXX11_CXXFLAGS) \
@@ -50,13 +43,24 @@ libclllvm_la_CXXFLAGS = \
 
 libclllvm_la_SOURCES = $(LLVM_SOURCES)
 
+libclspirv_la_CXXFLAGS = \
+	$(CXX11_CXXFLAGS) \
+	$(CLOVER_STD_OVERRIDE) \
+	$(VISIBILITY_CXXFLAGS) \
+	$(SPIRV_TOOLS_CFLAGS)
+
+libclspirv_la_SOURCES = $(SPIRV_SOURCES)
+
+libclspirv_la_LDFLAGS = \
+	$(SPIRV_TOOLS_LIBS)
+
 libclover_la_CXXFLAGS = \
 	$(CXX11_CXXFLAGS) \
 	$(CLOVER_STD_OVERRIDE) \
 	$(VISIBILITY_CXXFLAGS)
 
 libclover_la_LIBADD = \
-	libcltgsi.la libclllvm.la
+	libclllvm.la libclspirv.la
 
 libclover_la_SOURCES = $(CPP_SOURCES)
 

@@ -21,7 +21,10 @@
 //
 
 #include "api/util.hpp"
+#include "compiler/spirv/spirv.h"
 #include "core/program.hpp"
+#include "spirv/invocation.hpp"
+#include "util/u_math.h"
 #include "util/u_debug.h"
 
 #include <sstream>
@@ -29,9 +32,10 @@
 using namespace clover;
 
 namespace {
-   void
+   ref_vector<device>
    validate_build_common(const program &prog, cl_uint num_devs,
                          const cl_device_id *d_devs,
+                         ref_vector<device> &valid_devs,
                          void (*pfn_notify)(cl_program, void *),
                          void *user_data) {
       if (!pfn_notify && user_data)
@@ -40,10 +44,33 @@ namespace {
       if (prog.kernel_ref_count())
          throw error(CL_INVALID_OPERATION);
 
+      if ((!d_devs && num_devs > 0u) || (d_devs && num_devs == 0u))
+         throw error(CL_INVALID_VALUE);
+
+      auto devs = (d_devs ? objs(d_devs, num_devs) : valid_devs);
       if (any_of([&](const device &dev) {
-               return !count(dev, prog.context().devices());
-            }, objs<allow_empty_tag>(d_devs, num_devs)))
+               return !count(dev, valid_devs);
+            }, devs))
          throw error(CL_INVALID_DEVICE);
+
+      return devs;
+   }
+
+   enum program::il_type
+   identify_and_validate_il(const void *il, size_t length,
+                            const context::notify_action &notify) {
+
+      enum program::il_type il_type = program::il_type::none;
+
+      const uint32_t *stream = reinterpret_cast<const uint32_t*>(il);
+      if (stream[0] == SpvMagicNumber ||
+         util_bswap32(stream[0]) == SpvMagicNumber) {
+         if (!spirv::is_valid_spirv(stream, length / 4u, notify))
+            throw error(CL_INVALID_VALUE);
+         il_type = program::il_type::spirv;
+      }
+
+      return il_type;
    }
 }
 
@@ -128,6 +155,37 @@ clCreateProgramWithBinary(cl_context d_ctx, cl_uint n,
    return NULL;
 }
 
+cl_program
+clover::CreateProgramWithILKHR(cl_context d_ctx, const void *il,
+                               size_t length, cl_int *r_errcode) try {
+   auto &ctx = obj(d_ctx);
+
+   if (!il || !length)
+      throw error(CL_INVALID_VALUE);
+
+   const enum program::il_type il_type = identify_and_validate_il(il, length,
+                                                                  ctx.notify);
+
+   if (il_type == program::il_type::none)
+      throw error(CL_INVALID_VALUE);
+
+   // initialize a program object with it.
+   ret_error(r_errcode, CL_SUCCESS);
+   return new program(ctx, reinterpret_cast<const char*>(il), length, il_type);
+
+} catch (error &e) {
+   ret_error(r_errcode, e);
+   return NULL;
+}
+
+CLOVER_API cl_program
+clCreateProgramWithIL(cl_context d_ctx,
+                      const void *il,
+                      const size_t length,
+                      cl_int *r_errcode) {
+   return CreateProgramWithILKHR(d_ctx, il, length, r_errcode);
+}
+
 CLOVER_API cl_program
 clCreateProgramWithBuiltInKernels(cl_context d_ctx, cl_uint n,
                                   const cl_device_id *d_devs,
@@ -176,16 +234,22 @@ clBuildProgram(cl_program d_prog, cl_uint num_devs,
                void (*pfn_notify)(cl_program, void *),
                void *user_data) try {
    auto &prog = obj(d_prog);
-   auto devs = (d_devs ? objs(d_devs, num_devs) :
-                ref_vector<device>(prog.context().devices()));
+   auto valid_devs = ref_vector<device>(prog.devices());
+   auto devs = validate_build_common(prog, num_devs, d_devs, valid_devs,
+                                     pfn_notify, user_data);
    const auto opts = std::string(p_opts ? p_opts : "") + " " +
                      debug_get_option("CLOVER_EXTRA_BUILD_OPTIONS", "");
 
-   validate_build_common(prog, num_devs, d_devs, pfn_notify, user_data);
-
-   if (prog.has_source) {
+   if (prog.has_source || prog.has_il) {
       prog.compile(devs, opts);
       prog.link(devs, opts, { prog });
+   } else if (any_of([&](const device &dev){
+         return prog.build(dev).binary_type() != CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
+         }, devs)) {
+      // According to the OpenCL 1.2 specification, “if program is created
+      // with clCreateProgramWithBinary, then the program binary must be an
+      // executable binary (not a compiled binary or library).”
+      throw error(CL_INVALID_BINARY);
    }
 
    return CL_SUCCESS;
@@ -202,18 +266,17 @@ clCompileProgram(cl_program d_prog, cl_uint num_devs,
                  void (*pfn_notify)(cl_program, void *),
                  void *user_data) try {
    auto &prog = obj(d_prog);
-   auto devs = (d_devs ? objs(d_devs, num_devs) :
-                ref_vector<device>(prog.context().devices()));
+   auto valid_devs = ref_vector<device>(prog.devices());
+   auto devs = validate_build_common(prog, num_devs, d_devs, valid_devs,
+                                     pfn_notify, user_data);
    const auto opts = std::string(p_opts ? p_opts : "") + " " +
                      debug_get_option("CLOVER_EXTRA_COMPILE_OPTIONS", "");
    header_map headers;
 
-   validate_build_common(prog, num_devs, d_devs, pfn_notify, user_data);
-
    if (bool(num_headers) != bool(header_names))
       throw error(CL_INVALID_VALUE);
 
-   if (!prog.has_source)
+   if (!prog.has_source && !prog.has_il)
       throw error(CL_INVALID_OPERATION);
 
    for_each([&](const char *name, const program &header) {
@@ -243,8 +306,11 @@ clCompileProgram(cl_program d_prog, cl_uint num_devs,
 namespace {
    ref_vector<device>
    validate_link_devices(const ref_vector<program> &progs,
-                         const ref_vector<device> &all_devs) {
+                         const ref_vector<device> &all_devs,
+                         const std::string &opts) {
       std::vector<device *> devs;
+      const bool create_library =
+         opts.find("-create-library") != std::string::npos;
 
       for (auto &dev : all_devs) {
          const auto has_binary = [&](const program &prog) {
@@ -253,10 +319,22 @@ namespace {
                    t == CL_PROGRAM_BINARY_TYPE_LIBRARY;
          };
 
+         // According to the OpenCL 1.2 specification, a library is made of
+         // “compiled binaries specified in input_programs argument to
+         // clLinkProgram“; compiled binaries does not refer to libraries:
+         // “input_programs is an array of program objects that are compiled
+         // binaries or libraries that are to be linked to create the program
+         // executable”.
+         if (create_library && any_of([&](const program &prog) {
+                  const auto t = prog.build(dev).binary_type();
+                  return t != CL_PROGRAM_BINARY_TYPE_COMPILED_OBJECT;
+               }, progs))
+            throw error(CL_INVALID_OPERATION);
+
          // According to the CL 1.2 spec, when "all programs specified [..]
          // contain a compiled binary or library for the device [..] a link is
          // performed",
-         if (all_of(has_binary, progs))
+         else if (all_of(has_binary, progs))
             devs.push_back(&dev);
 
          // otherwise if "none of the programs contain a compiled binary or
@@ -275,16 +353,18 @@ clLinkProgram(cl_context d_ctx, cl_uint num_devs, const cl_device_id *d_devs,
               const char *p_opts, cl_uint num_progs, const cl_program *d_progs,
               void (*pfn_notify) (cl_program, void *), void *user_data,
               cl_int *r_errcode) try {
+   if (num_progs == 0u || (num_progs != 0u && !d_progs))
+      throw error(CL_INVALID_VALUE);
+
    auto &ctx = obj(d_ctx);
    const auto opts = std::string(p_opts ? p_opts : "") + " " +
                      debug_get_option("CLOVER_EXTRA_LINK_OPTIONS", "");
    auto progs = objs(d_progs, num_progs);
    auto prog = create<program>(ctx);
-   auto devs = validate_link_devices(progs,
-                                     (d_devs ? objs(d_devs, num_devs) :
-                                      ref_vector<device>(ctx.devices())));
-
-   validate_build_common(prog, num_devs, d_devs, pfn_notify, user_data);
+   auto valid_devs = ref_vector<device>(ctx.devices());
+   auto devs = validate_build_common(prog, num_devs, d_devs, valid_devs,
+                                     pfn_notify, user_data);
+   devs = validate_link_devices(progs, devs, opts);
 
    try {
       prog().link(devs, opts, progs);
@@ -344,6 +424,13 @@ clGetProgramInfo(cl_program d_prog, cl_program_info param,
 
    case CL_PROGRAM_SOURCE:
       buf.as_string() = prog.source();
+      break;
+
+   case CL_PROGRAM_IL:
+      if (prog.has_il)
+         buf.as_vector<char>() = prog.il();
+      else if (r_size)
+         *r_size = 0u;
       break;
 
    case CL_PROGRAM_BINARY_SIZES:
