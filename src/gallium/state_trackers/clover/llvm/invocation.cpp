@@ -32,7 +32,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/IPO/PassManagerBuilder.h>
 #include <llvm-c/Target.h>
-#include <llvm-spirv/SPIRV.h>
+//#include <llvm-spirv/SPIRV.h>
+#include <llvm/Support/SPIRV.h>
 
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Lex/PreprocessorOptions.h>
