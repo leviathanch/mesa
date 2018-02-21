@@ -58,7 +58,7 @@ clover::GetPlatformInfo(cl_platform_id d_platform, cl_platform_info param,
       break;
 
    case CL_PLATFORM_VERSION:
-      buf.as_string() = "OpenCL 1.1 Mesa " PACKAGE_VERSION
+      buf.as_string() = "OpenCL 1.2 Mesa " PACKAGE_VERSION
 #ifdef MESA_GIT_SHA1
                         " (" MESA_GIT_SHA1 ")"
 #endif

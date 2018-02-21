@@ -266,12 +266,12 @@ device::endianness() const {
 
 std::string
 device::device_version() const {
-    return "1.1";
+    return "1.2";
 }
 
 std::string
 device::device_clc_version() const {
-    return "1.1";
+    return "1.2";
 }
 
 bool
