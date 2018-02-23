@@ -677,6 +677,7 @@ Converter::TypeInt::getEnumType(int isSigned) const
          return DataType::TYPE_NONE;
       }
    }
+   return DataType::TYPE_NONE;
 }
 
 Converter::TypeFloat::TypeFloat(const spv_parsed_instruction_t *const parsedInstruction) : Type(spv::Op::OpTypeFloat)
