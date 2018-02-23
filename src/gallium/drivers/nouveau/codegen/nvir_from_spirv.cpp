@@ -4136,6 +4136,7 @@ Converter::getTexTarget(TypeImage const* type)
       assert(false && "Unsupported Dim::SubpassData");
       return TexTarget::TEX_TARGET_1D;
    }
+   return TexTarget::TEX_TARGET_UNKNOWN;
 }
 
 TexInstruction::ImgFormatDesc const*
