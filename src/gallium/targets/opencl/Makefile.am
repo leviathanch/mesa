@@ -35,6 +35,7 @@ lib@OPENCL_LIBNAME@_la_LIBADD = \
 	-lclangEdit \
 	-lclangLex \
 	-lclangBasic \
+	-lllvm_spirv \
 	$(LLVM_LIBS) \
 	$(PTHREAD_LIBS)
 
