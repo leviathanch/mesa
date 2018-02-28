@@ -1883,10 +1883,6 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
 		result = ac_build_fdiv(&ctx->ac, instr->dest.dest.ssa.bit_size == 32 ? ctx->ac.f32_1 : ctx->ac.f64_1,
 				       result);
 		break;
-	case nir_op_fpow:
-		result = emit_intrin_2f_param(&ctx->ac, "llvm.pow",
-		                              ac_to_float_type(&ctx->ac, def_type), src[0], src[1]);
-		break;
 	case nir_op_fmax:
 		result = emit_intrin_2f_param(&ctx->ac, "llvm.maxnum",
 		                              ac_to_float_type(&ctx->ac, def_type), src[0], src[1]);
@@ -2885,6 +2881,7 @@ get_dw_address(struct radv_shader_context *ctx,
 
 static LLVMValueRef
 load_tcs_varyings(struct ac_shader_abi *abi,
+		  LLVMTypeRef type,
 		  LLVMValueRef vertex_index,
 		  LLVMValueRef indir_index,
 		  unsigned const_index,
@@ -3008,6 +3005,7 @@ store_tcs_output(struct ac_shader_abi *abi,
 
 static LLVMValueRef
 load_tes_input(struct ac_shader_abi *abi,
+	       LLVMTypeRef type,
 	       LLVMValueRef vertex_index,
 	       LLVMValueRef param_index,
 	       unsigned const_index,
@@ -3146,12 +3144,21 @@ static LLVMValueRef load_tess_varyings(struct ac_nir_context *ctx,
 			 false, NULL, is_patch ? NULL : &vertex_index,
 			 &const_index, &indir_index);
 
-	result = ctx->abi->load_tess_varyings(ctx->abi, vertex_index, indir_index,
+	LLVMTypeRef dest_type = get_def_type(ctx, &instr->dest.ssa);
+
+	LLVMTypeRef src_component_type;
+	if (LLVMGetTypeKind(dest_type) == LLVMVectorTypeKind)
+		src_component_type = LLVMGetElementType(dest_type);
+	else
+		src_component_type = dest_type;
+
+	result = ctx->abi->load_tess_varyings(ctx->abi, src_component_type,
+					      vertex_index, indir_index,
 					      const_index, location, driver_location,
 					      instr->variables[0]->var->data.location_frac,
 					      instr->num_components,
 					      is_patch, is_compact, load_inputs);
-	return LLVMBuildBitCast(ctx->ac.builder, result, get_def_type(ctx, &instr->dest.ssa), "");
+	return LLVMBuildBitCast(ctx->ac.builder, result, dest_type, "");
 }
 
 static LLVMValueRef visit_load_var(struct ac_nir_context *ctx,
@@ -3646,13 +3653,13 @@ static LLVMValueRef visit_image_load(struct ac_nir_context *ctx,
 		res = ac_to_integer(&ctx->ac, res);
 	} else {
 		LLVMValueRef da = glsl_is_array_image(type) ? ctx->ac.i1true : ctx->ac.i1false;
-		LLVMValueRef glc = ctx->ac.i1false;
 		LLVMValueRef slc = ctx->ac.i1false;
 
 		params[0] = get_image_coords(ctx, instr);
 		params[1] = get_sampler_desc(ctx, instr->variables[0], AC_DESC_IMAGE, NULL, true, false);
 		params[2] = LLVMConstInt(ctx->ac.i32, 15, false); /* dmask */
-		params[3] = glc;
+		params[3] = (var->data.image._volatile || var->data.image.coherent) ?
+			    ctx->ac.i1true : ctx->ac.i1false;
 		params[4] = slc;
 		params[5] = ctx->ac.i1false;
 		params[6] = da;
@@ -3700,7 +3707,8 @@ static void visit_image_store(struct ac_nir_context *ctx,
 		params[1] = get_image_coords(ctx, instr); /* coords */
 		params[2] = get_sampler_desc(ctx, instr->variables[0], AC_DESC_IMAGE, NULL, true, true);
 		params[3] = LLVMConstInt(ctx->ac.i32, 15, false); /* dmask */
-		params[4] = glc;
+		params[4] = (force_glc || var->data.image._volatile || var->data.image.coherent) ?
+			    ctx->ac.i1true : ctx->ac.i1false;
 		params[5] = slc;
 		params[6] = ctx->ac.i1false;
 		params[7] = da;
